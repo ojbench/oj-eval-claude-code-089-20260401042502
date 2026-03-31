@@ -63,15 +63,47 @@ public:
     int layer = getLayer(size);
     if (layer == -1) return -1;
 
-    // Find minimum available address by checking from addr 0
     int block_size = getBlockSize(layer);
-    for (int addr = 0; addr < ram_size_; addr += block_size) {
-      if (tryAllocate(addr, layer)) {
-        return addr;
+    int min_addr = -1;
+    int min_layer = -1;
+
+    // Check current layer for minimum free address
+    for (int idx = 0; idx < num_blocks_[layer]; idx++) {
+      if (!allocated_[layer][idx]) {
+        min_addr = idx * block_size;
+        min_layer = layer;
+        break; // Found minimum at this layer
       }
     }
 
-    return -1;
+    // Check upper layers for potentially smaller addresses
+    for (int upper_layer = layer + 1; upper_layer < num_layers_; upper_layer++) {
+      int upper_block_size = getBlockSize(upper_layer);
+      for (int idx = 0; idx < num_blocks_[upper_layer]; idx++) {
+        if (!allocated_[upper_layer][idx]) {
+          int addr = idx * upper_block_size;
+          if (min_addr == -1 || addr < min_addr) {
+            min_addr = addr;
+            min_layer = upper_layer;
+          }
+          break; // Found minimum at this layer
+        }
+      }
+    }
+
+    if (min_addr == -1) {
+      return -1;
+    }
+
+    // Allocate from the found layer
+    if (min_layer == layer) {
+      markAllocated(min_addr, layer);
+      return min_addr;
+    } else {
+      // Split from upper layer
+      splitDown(min_addr, min_layer, layer, min_addr);
+      return min_addr;
+    }
   }
 
   /**
