@@ -74,11 +74,39 @@ public:
     int layer = getLayer(size);
     if (layer == -1) return -1;
 
-    // Find minimum aligned address
-    for (int addr = 0; addr < ram_size_; addr += size) {
-      int result = malloc_at(addr, size);
-      if (result != -1) {
-        return result;
+    // Find the minimum address across all layers (current and upper)
+    int min_addr = -1;
+    int min_layer = -1;
+
+    // Check current layer
+    if (free_lists_[layer]) {
+      min_addr = free_lists_[layer]->addr;
+      min_layer = layer;
+    }
+
+    // Check upper layers
+    for (int upper_layer = layer + 1; upper_layer < num_layers_; upper_layer++) {
+      if (free_lists_[upper_layer]) {
+        int addr = free_lists_[upper_layer]->addr;
+        if (min_addr == -1 || addr < min_addr) {
+          min_addr = addr;
+          min_layer = upper_layer;
+        }
+      }
+    }
+
+    if (min_addr == -1) {
+      return -1;
+    }
+
+    // Allocate from the found layer
+    if (min_layer == layer) {
+      removeFreeBlock(layer, min_addr);
+      return min_addr;
+    } else {
+      // Need to split from upper layer
+      if (splitToLayer(min_addr, min_layer, layer, min_addr)) {
+        return min_addr;
       }
     }
 
@@ -218,6 +246,39 @@ private:
     return true;
   }
 
+  // Find the minimum address where we can allocate a block at target_layer
+  int findMinimumFreeAddress(int target_layer) {
+    int size = getBlockSize(target_layer);
+
+    // First check if there's a free block at target layer
+    if (free_lists_[target_layer]) {
+      return free_lists_[target_layer]->addr;
+    }
+
+    // Need to split from upper layers - find minimum address we can get
+    int min_addr = -1;
+
+    // Look through all upper layers to find which can provide the minimum address
+    for (int layer = target_layer + 1; layer < num_layers_; layer++) {
+      if (!free_lists_[layer]) continue;
+
+      int parent_size = getBlockSize(layer);
+      FreeNode* curr = free_lists_[layer];
+
+      while (curr) {
+        int parent_addr = curr->addr;
+        // This parent block can provide blocks starting at parent_addr
+        // When split down to target_layer, the minimum address is still parent_addr
+        if (min_addr == -1 || parent_addr < min_addr) {
+          min_addr = parent_addr;
+        }
+        curr = curr->next;
+      }
+    }
+
+    return min_addr;
+  }
+
   // Allocate at a specific address by recursively splitting
   bool allocateAt(int addr, int target_layer) {
     int size = getBlockSize(target_layer);
@@ -264,21 +325,31 @@ private:
     int left_child = block_addr;
     int right_child = block_addr + child_size;
 
-    // Add both children as free
-    addFreeBlock(child_layer, left_child);
-    addFreeBlock(child_layer, right_child);
+    // Determine which child contains the target
+    int target_child, sibling_child;
+    if (target_addr >= right_child) {
+      target_child = right_child;
+      sibling_child = left_child;
+    } else {
+      target_child = left_child;
+      sibling_child = right_child;
+    }
 
-    // Continue splitting the child that contains target_addr
-    int target_child = (target_addr >= right_child) ? right_child : left_child;
+    // Add sibling as free (not the target, we'll continue with it)
+    addFreeBlock(child_layer, sibling_child);
 
     if (child_layer == to_layer) {
+      // Reached target layer, the target_child should be the address we want
       if (target_child == target_addr) {
-        removeFreeBlock(child_layer, target_addr);
+        // Don't add to free list, we're allocating it
         return true;
       }
+      // This shouldn't happen if logic is correct
       return false;
     }
 
+    // Add target child temporarily to continue splitting
+    addFreeBlock(child_layer, target_child);
     return splitToLayer(target_child, child_layer, to_layer, target_addr);
   }
 
