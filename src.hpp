@@ -25,6 +25,7 @@ public:
     // Initialize allocation bitmap for each layer
     allocated_ = new bool*[num_layers_];
     num_blocks_ = new int[num_layers_];
+    first_free_ = new int[num_layers_];
 
     for (int i = 0; i < num_layers_; i++) {
       int block_size = getBlockSize(i);
@@ -33,6 +34,7 @@ public:
       for (int j = 0; j < num_blocks_[i]; j++) {
         allocated_[i][j] = false;
       }
+      first_free_[i] = -1; // Will be set during initialization
     }
 
     // Mark all blocks except top layer as allocated initially
@@ -40,7 +42,11 @@ public:
       for (int idx = 0; idx < num_blocks_[layer]; idx++) {
         allocated_[layer][idx] = true;
       }
+      first_free_[layer] = -1; // No free blocks
     }
+
+    // Top layer is all free
+    first_free_[num_layers_ - 1] = 0;
   }
 
   ~BuddyAllocator() {
@@ -49,6 +55,7 @@ public:
     }
     delete[] allocated_;
     delete[] num_blocks_;
+    delete[] first_free_;
   }
 
   /**
@@ -68,25 +75,19 @@ public:
     int min_layer = -1;
 
     // Check current layer for minimum free address
-    for (int idx = 0; idx < num_blocks_[layer]; idx++) {
-      if (!allocated_[layer][idx]) {
-        min_addr = idx * block_size;
-        min_layer = layer;
-        break; // Found minimum at this layer
-      }
+    if (first_free_[layer] != -1) {
+      min_addr = first_free_[layer] * block_size;
+      min_layer = layer;
     }
 
     // Check upper layers for potentially smaller addresses
     for (int upper_layer = layer + 1; upper_layer < num_layers_; upper_layer++) {
-      int upper_block_size = getBlockSize(upper_layer);
-      for (int idx = 0; idx < num_blocks_[upper_layer]; idx++) {
-        if (!allocated_[upper_layer][idx]) {
-          int addr = idx * upper_block_size;
-          if (min_addr == -1 || addr < min_addr) {
-            min_addr = addr;
-            min_layer = upper_layer;
-          }
-          break; // Found minimum at this layer
+      if (first_free_[upper_layer] != -1) {
+        int upper_block_size = getBlockSize(upper_layer);
+        int addr = first_free_[upper_layer] * upper_block_size;
+        if (min_addr == -1 || addr < min_addr) {
+          min_addr = addr;
+          min_layer = upper_layer;
         }
       }
     }
@@ -140,6 +141,11 @@ public:
     int idx = addr / block_size;
     allocated_[layer][idx] = false;
 
+    // Update first_free if this is earlier
+    if (first_free_[layer] == -1 || idx < first_free_[layer]) {
+      first_free_[layer] = idx;
+    }
+
     // Try to merge with buddy
     tryMerge(addr, layer);
   }
@@ -150,6 +156,7 @@ private:
   int num_layers_;
   bool** allocated_;  // allocated_[layer][block_index]
   int* num_blocks_;   // number of blocks at each layer
+  int* first_free_;   // first free block index at each layer (-1 if none)
 
   // Get layer index for a given size
   int getLayer(int size) {
@@ -183,18 +190,35 @@ private:
     return !allocated_[layer][idx];
   }
 
-  // Mark a block as allocated
+  // Mark a block as allocated and update first_free
   void markAllocated(int addr, int layer) {
     int block_size = getBlockSize(layer);
     int idx = addr / block_size;
     allocated_[layer][idx] = true;
+
+    // Update first_free
+    if (first_free_[layer] == idx) {
+      // Find next free block
+      first_free_[layer] = -1;
+      for (int i = idx + 1; i < num_blocks_[layer]; i++) {
+        if (!allocated_[layer][i]) {
+          first_free_[layer] = i;
+          break;
+        }
+      }
+    }
   }
 
-  // Mark a block as free
+  // Mark a block as free and update first_free
   void markFree(int addr, int layer) {
     int block_size = getBlockSize(layer);
     int idx = addr / block_size;
     allocated_[layer][idx] = false;
+
+    // Update first_free
+    if (first_free_[layer] == -1 || idx < first_free_[layer]) {
+      first_free_[layer] = idx;
+    }
   }
 
   // Try to allocate at a specific address
